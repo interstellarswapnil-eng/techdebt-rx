@@ -242,15 +242,33 @@ def adf_heading(text: str, level: int = 2) -> Dict[str, Any]:
 
 
 def adf_paragraph(text: str) -> Dict[str, Any]:
-    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
+    """ADF paragraphs must not contain empty text nodes.
+
+    Jira will often reject payloads with {"type":"text","text":""} as INVALID_INPUT.
+    """
+    t = "" if text is None else str(text)
+    if t.strip() == "":
+        return {"type": "paragraph", "content": []}
+    return {"type": "paragraph", "content": [{"type": "text", "text": t}]}
 
 
 def adf_paragraph_rich(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return {"type": "paragraph", "content": chunks}
+    # Filter out empty text chunks (same INVALID_INPUT risk)
+    cleaned: List[Dict[str, Any]] = []
+    for ch in chunks or []:
+        if not isinstance(ch, dict):
+            continue
+        if ch.get("type") == "text" and str(ch.get("text", "")).strip() == "":
+            continue
+        cleaned.append(ch)
+    return {"type": "paragraph", "content": cleaned}
 
 
 def adf_text(text: str, bold: bool = False) -> Dict[str, Any]:
-    node: Dict[str, Any] = {"type": "text", "text": text}
+    t = "" if text is None else str(text)
+    if t.strip() == "":
+        t = "—"
+    node: Dict[str, Any] = {"type": "text", "text": t}
     if bold:
         node["marks"] = [{"type": "strong"}]
     return node
@@ -313,7 +331,9 @@ def build_adf_description(
     nodes.append(adf_task_list(oq))
 
     nodes.append(adf_rule())
-    nodes.append(adf_paragraph(source_line))
+    # Avoid embedding raw newlines in a single text node; Jira can be picky.
+    for line in str(source_line).splitlines():
+        nodes.append(adf_paragraph(line))
 
     return adf_doc(nodes)
 
