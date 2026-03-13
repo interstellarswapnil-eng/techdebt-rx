@@ -242,13 +242,14 @@ def adf_heading(text: str, level: int = 2) -> Dict[str, Any]:
 
 
 def adf_paragraph(text: str) -> Dict[str, Any]:
-    """ADF paragraphs must not contain empty text nodes.
+    """Return a Jira ADF paragraph.
 
-    Jira will often reject payloads with {"type":"text","text":""} as INVALID_INPUT.
+    In practice Jira is picky about empty nodes; the most compatible approach is to
+    always include at least one non-empty text node.
     """
     t = "" if text is None else str(text)
     if t.strip() == "":
-        return {"type": "paragraph", "content": []}
+        t = "—"
     return {"type": "paragraph", "content": [{"type": "text", "text": t}]}
 
 
@@ -537,9 +538,11 @@ def main() -> int:
         try:
             log(" → Searching Jira for upcoming work... ")
             stem = filename_stem(file_path)
+            # Team-managed projects often don't use the literal statuses "To Do"/"In Progress".
+            # Status category is far more portable.
             jql = (
                 f"project = {jira_project} "
-                f"AND status in (\"To Do\", \"In Progress\") "
+                f"AND statusCategory != Done "
                 f"AND text ~ \"{stem}\" "
                 f"ORDER BY created DESC"
             )
@@ -632,15 +635,12 @@ def main() -> int:
         if wt_key and wt_val is not None:
             extra_fields[wt_key] = wt_val
 
-        # Resolve priority field properly using createmeta
+        # Priority: Jira sometimes rejects id-based payloads depending on scheme/screen.
+        # Name-based is more portable.
         priority_key, priority_val = jira_resolve_field_and_value(createmeta, "Priority", jira_priority)
-        if priority_key is None:
-            # Fallback to direct name if resolution fails
-            log(f"   [DEBUG] Priority '{jira_priority}' not found in createmeta, using name fallback")
-            priority_val = {"name": jira_priority}
-        else:
-            log(f"   [DEBUG] Priority resolved to {priority_val}")
-        
+        log(f"   [DEBUG] Priority resolved to {priority_val}")
+        priority_val = {"name": jira_priority}
+
         fields = {
             "project": {"key": jira_project},
             "issuetype": {"name": jira_issue_type},
