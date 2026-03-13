@@ -294,6 +294,52 @@ def adf_task_list(items: List[str]) -> Dict[str, Any]:
     }
 
 
+def build_plain_description(
+    pm: Dict[str, Any],
+    cto: Dict[str, Any],
+    decision: Dict[str, Any],
+    source_line: str,
+) -> str:
+    def s(x: Any) -> str:
+        return str(x).strip() if x is not None else ""
+
+    lines: List[str] = []
+    lines += [
+        "For the Product Manager",
+        "-" * 24,
+        s(pm.get("plain_english_summary")),
+        "",
+        "Cost of delay:",
+        s(pm.get("cost_of_delay")),
+        "",
+        "Recommendation:",
+        s(pm.get("recommendation")),
+        "",
+        f"One-liner: {s(pm.get('one_liner'))}",
+        "",
+        "For the Tech Lead / CTO",
+        "-" * 22,
+        f"Architectural Risk: {s(cto.get('architectural_risk'))}",
+        s(cto.get("technical_summary")),
+        f"Blast radius: {s(cto.get('blast_radius'))}",
+        f"Churn signal: {s(cto.get('churn_signal'))}",
+        f"Priority: {s(cto.get('priority'))}",
+        "",
+        "Decision Log",
+        "-" * 12,
+        "What this code appears to do:",
+        s(decision.get("auto_context")),
+        "",
+        "Open questions:",
+    ]
+    oq = decision.get("open_questions") or []
+    for q in [str(x).strip() for x in oq if str(x).strip()][:5]:
+        lines.append(f"- {q}")
+    lines += ["", source_line]
+    # Remove leading/trailing blank lines
+    return "\n".join([ln for ln in lines]).strip() + "\n"
+
+
 def build_adf_description(
     pm: Dict[str, Any],
     cto: Dict[str, Any],
@@ -345,7 +391,12 @@ def jira_create_issue(
     token: str,
     fields: Dict[str, Any],
 ) -> Dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/rest/api/3/issue"
+    # Jira Cloud v3 prefers ADF for description and can be picky.
+    # v2 is often more forgiving (plain string description), so allow switching.
+    api_version = env("JIRA_API_VERSION", "3").strip()
+    if api_version not in {"2", "3"}:
+        api_version = "3"
+    url = f"{base_url.rstrip('/')}/rest/api/{api_version}/issue"
     payload = {"fields": fields}
     # Debug: log the payload being sent (truncated for size)
     log(f"   [DEBUG] Payload keys: {list(fields.keys())}")
@@ -617,13 +668,17 @@ def main() -> int:
         cto_section = out.get("cto_section") or {}
         decision_log = out.get("decision_log") or {}
 
-        # Build ADF description
+        # Build description (ADF for v3, plain text for v2 if configured)
         source_line = (
-            f"🔍 Source: SonarCloud Issue {sonar_issue_key} | Rule: {rule} | Severity: {severity} | "
+            f"Source: SonarCloud Issue {sonar_issue_key} | Rule: {rule} | Severity: {severity} | "
             f"Debt age: {days_age if days_age is not None else 'unknown'} days | Remediation effort: {effort}\n"
             f"SonarIssueKey: {sonar_issue_key}"
         )
-        adf = build_adf_description(pm_section, cto_section, decision_log, source_line)
+        desc_mode = env("JIRA_DESCRIPTION_MODE", "adf").strip().lower()
+        if desc_mode == "plain":
+            description: Any = build_plain_description(pm_section, cto_section, decision_log, source_line)
+        else:
+            description = build_adf_description(pm_section, cto_section, decision_log, source_line)
 
         # Required custom fields (Space / Work type) resolved dynamically
         extra_fields: Dict[str, Any] = {}
@@ -647,7 +702,7 @@ def main() -> int:
             "summary": jira_title,
             "priority": priority_val,
             "labels": ["technical-debt", "debt-translated", f"sonar-{str(severity).lower()}"],
-            "description": adf,
+            "description": description,
             **extra_fields,
         }
 
