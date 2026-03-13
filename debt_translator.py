@@ -182,7 +182,7 @@ def jira_headers(email: str, token: str) -> Dict[str, str]:
 
 
 def jira_search(base_url: str, email: str, token: str, jql: str, fields: str = "summary") -> Dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/rest/api/3/search"
+    url = f"{base_url.rstrip('/')}/rest/api/3/search/jql"
     payload = {"jql": jql, "maxResults": 3, "fields": [f.strip() for f in fields.split(",") if f.strip()]}
     r = requests.post(url, headers=jira_headers(email, token), data=json.dumps(payload), timeout=30)
     r.raise_for_status()
@@ -325,7 +325,22 @@ def jira_create_issue(
     fields: Dict[str, Any],
 ) -> Dict[str, Any]:
     url = f"{base_url.rstrip('/')}/rest/api/3/issue"
-    r = requests.post(url, headers=jira_headers(email, token), data=json.dumps({"fields": fields}), timeout=30)
+    payload = {"fields": fields}
+    # Debug: log the payload being sent (truncated for size)
+    log(f"   [DEBUG] Payload keys: {list(fields.keys())}")
+    if "summary" in fields:
+        log(f"   [DEBUG] Summary ({len(str(fields['summary']))} chars): {str(fields['summary'])[:100]}")
+    if "priority" in fields:
+        log(f"   [DEBUG] Priority: {fields['priority']}")
+    if "description" in fields:
+        desc = fields["description"]
+        log(f"   [DEBUG] Description type: {type(desc).__name__}, content keys: {list(desc.keys()) if isinstance(desc, dict) else 'N/A'}")
+    # Log any extra custom fields
+    custom_keys = [k for k in fields.keys() if k.startswith("customfield_")]
+    if custom_keys:
+        log(f"   [DEBUG] Custom fields: {custom_keys}")
+    log(f"   [DEBUG] Full payload: {json.dumps(payload)[:500]}...")
+    r = requests.post(url, headers=jira_headers(email, token), data=json.dumps(payload), timeout=30)
     if r.status_code >= 400:
         # surface full response
         raise RuntimeError(f"Jira create failed: HTTP {r.status_code} — {r.text}")
@@ -571,6 +586,8 @@ def main() -> int:
             continue
 
         jira_title = str(out.get("jira_title", "Technical debt item"))[:80]
+        if not jira_title.strip():
+            jira_title = "Technical debt item"
         jira_priority_model = str(out.get("jira_priority", "Medium"))
         jira_priority = map_priority_to_jira(jira_priority_model)
         pm_section = out.get("pm_section") or {}
@@ -595,11 +612,20 @@ def main() -> int:
         if wt_key and wt_val is not None:
             extra_fields[wt_key] = wt_val
 
+        # Resolve priority field properly using createmeta
+        priority_key, priority_val = jira_resolve_field_and_value(createmeta, "Priority", jira_priority)
+        if priority_key is None:
+            # Fallback to direct name if resolution fails
+            log(f"   [DEBUG] Priority '{jira_priority}' not found in createmeta, using name fallback")
+            priority_val = {"name": jira_priority}
+        else:
+            log(f"   [DEBUG] Priority resolved to {priority_val}")
+        
         fields = {
             "project": {"key": jira_project},
             "issuetype": {"name": jira_issue_type},
             "summary": jira_title,
-            "priority": {"name": jira_priority},
+            "priority": priority_val,
             "labels": ["technical-debt", "debt-translated", f"sonar-{str(severity).lower()}"],
             "description": adf,
             **extra_fields,
